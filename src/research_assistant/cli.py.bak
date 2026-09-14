@@ -1,0 +1,507 @@
+"""The command-line interface (Phase 6.2).
+
+Chapter 5.6 argues for a command line first: "it takes a typed query and
+prints or saves the resulting report, with no need to build and maintain a
+visual interface before the core system even works." Chapter 6.7 then asks
+for one properly, as a usable way to submit a query and get a report.
+
+One subcommand per thing a person actually wants to do, and every one of
+them has a mode that runs without an API key, because a tool nobody can try
+before committing a credit card is a tool that does not get tried.
+
+    research-assistant check                 is my environment set up?
+    research-assistant run "<question>"      the whole pipeline
+    research-assistant demo                  the whole pipeline, offline
+    research-assistant search "<query>"      retrieval only, no model
+    research-assistant read <url>            read and verify one source
+    research-assistant write <findings.json> write a report from findings
+    research-assistant evaluate              run the test-query evaluation
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+import textwrap
+from typing import List, Optional
+
+WIDTH = 88
+
+
+def rule(char: str = "-") -> str:
+    return char * WIDTH
+
+
+def wrap(text: str, indent: str = "    ") -> str:
+    return textwrap.fill(text, WIDTH, initial_indent=indent, subsequent_indent=indent)
+
+
+def heading(title: str) -> None:
+    print(f"\n{rule('=')}\n{title}\n{rule('=')}")
+
+
+# --- check -------------------------------------------------------------
+
+
+def cmd_check(args) -> int:
+    import urllib.error
+    import urllib.request
+
+    from .config import get_settings
+
+    heading("ENVIRONMENT")
+    ok = sys.version_info >= (3, 10)
+    print(f"  python:  {sys.version.split()[0]} {'ok' if ok else 'TOO OLD (need 3.10+)'}")
+
+    for module in ("claude_agent_sdk", "pydantic", "httpx", "pymupdf", "trafilatura", "reportlab"):
+        try:
+            imported = __import__(module)
+            version = getattr(imported, "__version__", None) or getattr(imported, "Version", "?")
+            print(f"  {module + ':':24} {version}")
+        except ImportError as exc:
+            print(f"  {module + ':':24} MISSING ({exc})")
+            ok = False
+
+    heading("API KEYS")
+    settings = get_settings()
+    for name, value, note in [
+        ("ANTHROPIC_API_KEY", settings.anthropic_api_key, "required for every agent"),
+        ("TAVILY_API_KEY", settings.tavily_api_key, "web search (or use Serper)"),
+        ("SERPER_API_KEY", settings.serper_api_key, "web search (or use Tavily)"),
+        ("SEMANTIC_SCHOLAR_API_KEY", settings.semantic_scholar_api_key, "recommended; keyless search is throttled"),
+    ]:
+        print(f"  {name + ':':26} {'set' if value else 'not set':8} ({note})")
+    print(f"  search provider in use:    {settings.search_provider}")
+
+    heading("NETWORK")
+    for label, url in [
+        ("arXiv", "http://export.arxiv.org/api/query?search_query=all:test&max_results=1"),
+        ("Semantic Scholar", "https://api.semanticscholar.org/graph/v1/paper/search?query=test&limit=1"),
+    ]:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "research-assistant/0.1"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                print(f"  {label + ':':20} reachable (HTTP {response.status})")
+        except urllib.error.HTTPError as exc:
+            print(f"  {label + ':':20} HTTP {exc.code} (network path works; request rejected)")
+        except Exception as exc:  # noqa: BLE001 - diagnostics should never raise
+            print(f"  {label + ':':20} UNREACHABLE ({exc})")
+
+    print()
+    if ok:
+        print("Environment looks usable. Add any missing keys to .env when you have them.")
+        return 0
+    print("Fix the problems above before running the pipeline.")
+    return 1
+
+
+# --- run / demo --------------------------------------------------------
+
+
+def print_run(run) -> None:
+    heading("PLAN")
+    if run.used_fallback_plan:
+        print("  (the model's plan was unusable; using the fallback)")
+    for index, angle in enumerate(run.angles_planned, start=1):
+        print(f"  {index}. {angle}")
+
+    for record in run.rounds:
+        heading(f"ROUND {record.number}")
+        print(f'  angle:            "{record.angle}"')
+        print(f"  sources found:    {record.sources_found}")
+        print(f"  new to this run:  {record.sources_new}")
+        print(f"  actually read:    {record.sources_read}")
+        print(f"  unreadable:       {record.unreadable_sources}")
+        print(f"  findings added:   {record.findings_added}")
+        print(f"  claims rejected:  {record.claims_rejected}")
+        if record.stop_decision:
+            verdict = "STOP" if record.stop_decision.should_stop else "continue"
+            print(f"  decision:         {verdict} ({record.stop_decision.cause})")
+            print(wrap(record.stop_decision.reason, indent="      "))
+
+    rejected = [r for r in run.extraction_reports if r.rejected]
+    if rejected:
+        heading("REJECTED CLAIMS")
+        for report in rejected:
+            for rejection in report.rejected:
+                print(f"\n  [{', '.join(rejection.failed_checks)}] {report.source_url}")
+                print(wrap(rejection.claim, indent="      "))
+
+    heading("SUMMARY")
+    print(textwrap.indent(run.summary(), "  "))
+
+    if run.writer and run.writer.validation.issues:
+        heading("REPORT VALIDATION")
+        for issue in run.writer.validation.issues:
+            print(f"  [{issue.severity}] {issue.check}")
+            print(wrap(issue.detail, indent="      "))
+
+
+async def _run_pipeline(question: str, *, demo: bool, max_rounds: int, out: str) -> int:
+    from .agents.writer_agent import save_report
+    from .orchestration import ResearchPipeline, StoppingRule
+
+    if demo:
+        from .demo import build_demo_pipeline
+
+        pipeline = build_demo_pipeline(max_rounds=max_rounds)
+        print("Demo mode: built-in sources, scripted models, no network.")
+    else:
+        pipeline = ResearchPipeline(stopping_rule=StoppingRule(max_rounds=max_rounds))
+
+    run = await pipeline.run(question)
+    print_run(run)
+
+    markdown_path, pdf_path = save_report(run.report, out)
+    print(f"\nwrote {markdown_path}")
+    print(f"wrote {pdf_path}")
+
+    if not run.succeeded:
+        print(
+            "\nNo report could be written from verified evidence. That is a result, not a "
+            "crash: nothing found could be checked against its source.",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
+def cmd_run(args) -> int:
+    from .config import get_settings
+
+    question = " ".join(args.question).strip()
+    if not question:
+        print("ERROR: give a research question.", file=sys.stderr)
+        return 1
+
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        print(
+            "ERROR: no ANTHROPIC_API_KEY set. Try `research-assistant demo` to watch the "
+            "pipeline run without keys.",
+            file=sys.stderr,
+        )
+        return 1
+    if settings.search_provider == "none":
+        print(
+            "warning: no web search provider configured; only academic sources will be searched.",
+            file=sys.stderr,
+        )
+
+    return asyncio.run(_run_pipeline(question, demo=False, max_rounds=args.max_rounds, out=args.out))
+
+
+def cmd_demo(args) -> int:
+    from .demo import DEMO_QUESTION, DEMO_UNANSWERABLE
+
+    question = " ".join(args.question).strip() or (
+        DEMO_UNANSWERABLE if args.unanswerable else DEMO_QUESTION
+    )
+    return asyncio.run(_run_pipeline(question, demo=True, max_rounds=args.max_rounds, out=args.out))
+
+
+# --- search ------------------------------------------------------------
+
+
+async def _search(query: str) -> int:
+    from .config import MissingAPIKeyError
+    from .retrieval import search_arxiv, search_semantic_scholar, search_web
+    from .retrieval.base import RetrievalError
+    from .search.planner import SearchPlanner, deduplicate
+
+    heading(f"QUERY: {query}")
+    everything = []
+    for label, search in (
+        ("arXiv", search_arxiv),
+        ("Semantic Scholar", search_semantic_scholar),
+        ("Web search", search_web),
+    ):
+        try:
+            sources = await search(query, max_results=5)
+        except (RetrievalError, MissingAPIKeyError) as exc:
+            print(f"\n{rule()}\n{label}: FAILED")
+            print(wrap(str(exc), indent="  "))
+            continue
+
+        print(f"\n{rule()}\n{label}: {len(sources)} result(s)")
+        for index, source in enumerate(sources, start=1):
+            print(f"\n  {index}. {textwrap.shorten(source.title, WIDTH - 8)}")
+            print(f"     {source.source_url}  [{source.source_type}]")
+            print(wrap(source.relevance_note, indent="     "))
+        everything.extend(sources)
+
+    unique = deduplicate(everything)
+    planner = SearchPlanner(original_query=query)
+    assessment = planner.register_attempt(query, "all_tools", unique)
+
+    heading("PLANNER VERDICT")
+    print(f"  retrieved:        {len(everything)}")
+    print(f"  after dedup:      {len(unique)}")
+    print(f"  distinct domains: {assessment.distinct_domains}")
+    print(f"  keyword overlap:  {assessment.keyword_overlap:.0%}")
+    print(f"  verdict:          {assessment.verdict.upper()}")
+    print(wrap(assessment.reason, indent="  "))
+    if planner.should_continue():
+        print(f"  would try next:   {planner.suggest_next_query()!r}")
+    return 0
+
+
+def cmd_search(args) -> int:
+    query = " ".join(args.query).strip()
+    if not query:
+        print("ERROR: give a search query.", file=sys.stderr)
+        return 1
+    return asyncio.run(_search(query))
+
+
+# --- read --------------------------------------------------------------
+
+
+async def _read(url: str, question: str, use_model: bool) -> int:
+    from .agents import ExtractionAgent
+    from .extraction import FetchError, ParseError, fetch_source, resolve_fetch_url
+
+    heading(f"SOURCE: {url}")
+    resolved = resolve_fetch_url(url)
+    if resolved != url:
+        print(f"  fetching {resolved} (rewritten to reach the full text)")
+
+    try:
+        document = await fetch_source(url)
+    except (FetchError, ParseError) as exc:
+        print(wrap(str(exc), indent="  "), file=sys.stderr)
+        return 1
+
+    print(f"\n  kind:       {document.content_kind}")
+    if document.page_count:
+        print(f"  pages:      {document.page_count}")
+    print(f"  title:      {document.title or '(none found)'}")
+    print(f"  characters: {document.char_count:,}")
+    print(f"  usable:     {'yes' if document.is_usable else 'no -- too little text'}")
+
+    if not use_model:
+        heading("FIRST 800 CHARACTERS")
+        print(textwrap.fill(document.text[:800], WIDTH))
+        return 0
+    if not document.is_usable:
+        return 1
+
+    heading("EXTRACTING (calls the model)")
+    findings, report = await ExtractionAgent().extract_from_document(document, question)
+    print(f"  proposed: {report.candidates_proposed}   verified: {report.findings_verified}   "
+          f"rejected: {len(report.rejected)}")
+    if report.detail:
+        print(wrap(report.detail, indent="  "))
+
+    for index, finding in enumerate(findings, start=1):
+        print(f"\n{rule()}\nVERIFIED {index}")
+        print(wrap(finding.claim, indent="  "))
+        print("\n  quoted from the source:")
+        print(wrap(f'"{finding.supporting_snippet}"', indent="    "))
+
+    for index, rejection in enumerate(report.rejected, start=1):
+        print(f"\n{rule()}\nREJECTED {index}  [{', '.join(rejection.failed_checks)}]")
+        print(wrap(rejection.claim, indent="  "))
+        print("\n  why:")
+        print(wrap(rejection.detail, indent="    "))
+    return 0
+
+
+def cmd_read(args) -> int:
+    from .config import get_settings
+
+    use_model = not args.no_model
+    if use_model and not get_settings().anthropic_api_key:
+        print(
+            "ERROR: no ANTHROPIC_API_KEY set. Use --no-model to inspect the parsed text "
+            "without calling the model.",
+            file=sys.stderr,
+        )
+        return 1
+    return asyncio.run(_read(args.url, args.question, use_model))
+
+
+# --- write -------------------------------------------------------------
+
+
+async def _write(findings_path: Optional[str], question: str, out: str, demo: bool) -> int:
+    from .agents.writer_agent import WriterAgent, save_report
+    from .schemas import VerifiedFinding
+
+    if demo:
+        from .demo import build_demo_pipeline
+
+        run = await build_demo_pipeline().run(question)
+        outcome = run.writer
+        report = run.report
+    else:
+        with open(findings_path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+        if isinstance(raw, dict):
+            raw = raw.get("findings", [])
+        findings: List[VerifiedFinding] = [VerifiedFinding(**entry) for entry in raw]
+        print(f"Writing a report from {len(findings)} verified finding(s).")
+        outcome = await WriterAgent().write_report(question, findings)
+        report = outcome.report
+
+    heading("VALIDATION")
+    print(f"  passed:    {'yes' if outcome.passed_validation else 'NO'}")
+    print(f"  revisions: {outcome.revisions_used}")
+    for issue in outcome.validation.issues:
+        print(f"  [{issue.severity}] {issue.check}")
+        print(wrap(issue.detail, indent="      "))
+    if not outcome.validation.issues:
+        print("  no issues found.")
+
+    markdown_path, pdf_path = save_report(report, out)
+    print(f"\nwrote {markdown_path}\nwrote {pdf_path}")
+    heading("MARKDOWN")
+    print(report.to_markdown())
+    return 0 if outcome.passed_validation else 2
+
+
+def cmd_write(args) -> int:
+    from .config import get_settings
+    from .demo import DEMO_QUESTION
+
+    if args.demo:
+        return asyncio.run(_write(None, args.question or DEMO_QUESTION, args.out, demo=True))
+    if not args.findings:
+        print("ERROR: give a findings JSON file, or use --demo.", file=sys.stderr)
+        return 1
+    if not get_settings().anthropic_api_key:
+        print("ERROR: no ANTHROPIC_API_KEY set. Use --demo to see the output format.",
+              file=sys.stderr)
+        return 1
+    return asyncio.run(_write(args.findings, args.question or "", args.out, demo=False))
+
+
+# --- evaluate ----------------------------------------------------------
+
+
+async def _evaluate(demo: bool, out: str, max_rounds: int) -> int:
+    from .evaluation import TEST_QUERIES, evaluate, render_evaluation_markdown
+    from .orchestration import ResearchPipeline, StoppingRule
+
+    if demo:
+        from .demo import build_demo_pipeline
+
+        pipeline = build_demo_pipeline(max_rounds=max_rounds)
+        print("Demo mode: the harness is real, the pipeline under test is the offline one.")
+    else:
+        pipeline = ResearchPipeline(stopping_rule=StoppingRule(max_rounds=max_rounds))
+
+    print(f"Running {len(TEST_QUERIES)} test queries...\n")
+    result, _ = await evaluate(pipeline)
+
+    summary = result.summary
+    heading("EVALUATION SUMMARY")
+    print(f"  queries run:          {summary.queries_run}")
+    print(f"  behaved as expected:  {summary.behaved_as_expected}/{summary.queries_run}")
+    print(f"  reports produced:     {summary.reports_produced}")
+    print(f"  validation passed:    {summary.validation_passed}")
+    print(f"  claims verified:      {summary.total_claims_verified}"
+          f"/{summary.total_claims_proposed}")
+    if summary.mean_seconds is not None:
+        print(f"  mean time per query:  {summary.mean_seconds:.1f}s")
+
+    for metrics in summary.per_query:
+        flag = " " if metrics.behaved_as_expected else "!"
+        print(f"  {flag} {metrics.query_id:28} findings={metrics.claims_verified:<3} "
+              f"stop={metrics.stop_cause}")
+
+    for failure in result.failures:
+        print(f"  ERROR {failure}", file=sys.stderr)
+
+    note = (
+        "Run against the OFFLINE DEMO pipeline, whose corpus is three documents about one "
+        "topic. Queries on any other subject correctly return nothing, which shows up here as "
+        "\"did not behave as expected\" only because the test set assumes a real corpus. Treat "
+        "this file as proof that the harness works, not as a measurement of the system."
+        if demo
+        else None
+    )
+    path = out if out.endswith(".md") else f"{out}.md"
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(render_evaluation_markdown(result, note=note))
+    print(f"\nwrote {path}")
+    print("The spot-check worksheet at the end of that file is the part that needs a human.")
+    return 0 if summary.behaved_as_expected == summary.queries_run else 2
+
+
+def cmd_evaluate(args) -> int:
+    from .config import get_settings
+
+    if not args.demo and not get_settings().anthropic_api_key:
+        print("ERROR: no ANTHROPIC_API_KEY set. Use --demo to exercise the harness offline.",
+              file=sys.stderr)
+        return 1
+    return asyncio.run(_evaluate(args.demo, args.out, args.max_rounds))
+
+
+# --- wiring ------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="research-assistant",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    check = subparsers.add_parser("check", help="check the environment and API access")
+    check.set_defaults(func=cmd_check)
+
+    run = subparsers.add_parser("run", help="answer a research question end to end")
+    run.add_argument("question", nargs="+")
+    run.add_argument("--max-rounds", type=int, default=3)
+    run.add_argument("--out", default="report", help="output path stem")
+    run.set_defaults(func=cmd_run)
+
+    demo = subparsers.add_parser("demo", help="run the whole pipeline offline, with no keys")
+    demo.add_argument("question", nargs="*")
+    demo.add_argument("--unanswerable", action="store_true",
+                      help="use a question the system should fail to answer")
+    demo.add_argument("--max-rounds", type=int, default=3)
+    demo.add_argument("--out", default="demo_report", help="output path stem")
+    demo.set_defaults(func=cmd_demo)
+
+    search = subparsers.add_parser("search", help="retrieval only: no model, no cost")
+    search.add_argument("query", nargs="+")
+    search.set_defaults(func=cmd_search)
+
+    read = subparsers.add_parser("read", help="read one source and verify claims from it")
+    read.add_argument("url")
+    read.add_argument("--question", default="What are the main findings of this source?")
+    read.add_argument("--no-model", action="store_true", help="parse only; no model call")
+    read.set_defaults(func=cmd_read)
+
+    write = subparsers.add_parser("write", help="write a report from verified findings")
+    write.add_argument("findings", nargs="?", help="JSON file of verified findings")
+    write.add_argument("--demo", action="store_true")
+    write.add_argument("--question", default="")
+    write.add_argument("--out", default="report", help="output path stem")
+    write.set_defaults(func=cmd_write)
+
+    evaluate_cmd = subparsers.add_parser("evaluate", help="run the test-query evaluation")
+    evaluate_cmd.add_argument("--demo", action="store_true", help="evaluate the offline pipeline")
+    evaluate_cmd.add_argument("--max-rounds", type=int, default=3)
+    evaluate_cmd.add_argument("--out", default="evaluation.md")
+    evaluate_cmd.set_defaults(func=cmd_evaluate)
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

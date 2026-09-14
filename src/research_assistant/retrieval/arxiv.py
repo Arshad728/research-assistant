@@ -1,0 +1,101 @@
+"""arXiv retrieval client.
+
+arXiv's API returns an Atom feed rather than JSON, so this module has two
+halves: a small async function that fetches the feed, and a pure parsing
+function that turns the XML into ``CandidateSource`` objects. Keeping the
+parser pure means it can be tested exhaustively against a saved response
+without any network access at all -- which matters, because as the Build
+Log records, the environment this project was written in cannot reach
+arxiv.org.
+
+No API key is needed. arXiv asks callers to leave roughly three seconds
+between requests, which ``_RATE_LIMITER`` enforces.
+"""
+from __future__ import annotations
+
+import xml.etree.ElementTree as ElementTree
+from typing import List, Optional
+
+from ..schemas import CandidateSource
+from .base import RateLimiter, RetrievalError, condense, get_text
+
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
+
+_ATOM = "{http://www.w3.org/2005/Atom}"
+_ARXIV = "{http://arxiv.org/schemas/atom}"
+
+# arXiv's usage guidance asks for roughly one request every three seconds.
+_RATE_LIMITER = RateLimiter(3.0)
+
+
+def _text_of(element: Optional[ElementTree.Element]) -> str:
+    if element is None or element.text is None:
+        return ""
+    return element.text.strip()
+
+
+def parse_arxiv_atom(xml_text: str, max_results: Optional[int] = None) -> List[CandidateSource]:
+    """Turn an arXiv Atom feed into candidate sources.
+
+    Entries missing a usable title or link are skipped rather than turned
+    into half-empty records: a source the Extraction Agent cannot open is
+    worse than no source at all.
+    """
+    try:
+        root = ElementTree.fromstring(xml_text)
+    except ElementTree.ParseError as exc:
+        raise RetrievalError(f"arXiv returned a response that is not valid XML: {exc}") from exc
+
+    sources: List[CandidateSource] = []
+    for entry in root.findall(f"{_ATOM}entry"):
+        title = condense(_text_of(entry.find(f"{_ATOM}title")), limit=300)
+        abs_url = _text_of(entry.find(f"{_ATOM}id"))
+        if not title or not abs_url.startswith(("http://", "https://")):
+            continue
+
+        abstract = _text_of(entry.find(f"{_ATOM}summary"))
+        published = _text_of(entry.find(f"{_ATOM}published"))
+        year = published[:4] if len(published) >= 4 else "year unknown"
+
+        primary = entry.find(f"{_ARXIV}primary_category")
+        category = primary.get("term", "") if primary is not None else ""
+
+        authors = [
+            _text_of(author.find(f"{_ATOM}name"))
+            for author in entry.findall(f"{_ATOM}author")
+        ]
+        authors = [name for name in authors if name]
+        if len(authors) > 3:
+            author_note = f"{authors[0]} et al."
+        else:
+            author_note = ", ".join(authors)
+
+        prefix_parts = [part for part in (author_note, year, category) if part]
+        prefix = " | ".join(prefix_parts)
+        note = f"{prefix}. {condense(abstract)}" if prefix else condense(abstract)
+
+        sources.append(
+            CandidateSource(
+                title=title,
+                source_url=abs_url,
+                source_type="preprint",
+                relevance_note=note,
+            )
+        )
+        if max_results is not None and len(sources) >= max_results:
+            break
+
+    return sources
+
+
+async def search_arxiv(query: str, max_results: int = 10) -> List[CandidateSource]:
+    """Search arXiv for preprints matching a free-text query."""
+    params = {
+        "search_query": f"all:{query}",
+        "start": 0,
+        "max_results": max_results,
+        "sortBy": "relevance",
+        "sortOrder": "descending",
+    }
+    xml_text = await get_text(ARXIV_API_URL, params=params, rate_limiter=_RATE_LIMITER)
+    return parse_arxiv_atom(xml_text, max_results=max_results)

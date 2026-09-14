@@ -1,0 +1,77 @@
+Demo mode: built-in sources, scripted models, no network.
+
+========================================================================================
+PLAN
+========================================================================================
+  1. four-day work week productivity?
+  2. four-day work productivity?
+
+========================================================================================
+ROUND 1
+========================================================================================
+  angle:            "four-day work week productivity?"
+  sources found:    3
+  new to this run:  3
+  actually read:    3
+  unreadable:       0
+  findings added:   6
+  claims rejected:  0
+  decision:         STOP (sufficient_evidence)
+      6 verified findings from 3 independent sources meets the threshold of 4 findings
+      from 2 sources.
+
+========================================================================================
+SUMMARY
+========================================================================================
+  Question: "What is the effect of a four-day work week on productivity?"
+  Plan: 2 search angle(s)
+  Rounds run: 1
+  Sources found: 3; sources read: 3
+  Verified findings: 6 from 3 source(s)
+  Claims rejected in verification: 0
+  Stopped because: 6 verified findings from 3 independent sources meets the threshold of 4 findings from 2 sources.
+  Report validation: passed (0 revision(s))
+  Elapsed: 0.0s
+
+wrote examples/demo_run.md
+wrote examples/demo_run.pdf
+Demo mode: built-in sources, scripted models, no network.
+
+========================================================================================
+PLAN
+========================================================================================
+  1. performance characteristics Zephyrine consensus protocol?
+  2. performance characteristics Zephyrine
+
+========================================================================================
+ROUND 1
+========================================================================================
+  angle:            "performance characteristics Zephyrine consensus protocol?"
+  sources found:    0
+  new to this run:  0
+  actually read:    0
+  unreadable:       0
+  findings added:   0
+  claims rejected:  0
+  decision:         STOP (no_evidence)
+      Stopped after 1 round(s) with no verified findings at all. Either the sources
+      found did not address the question, or nothing they claimed could be verified
+      against them. The last round also found no sources that had not already been seen.
+
+========================================================================================
+SUMMARY
+========================================================================================
+  Question: "What are the performance characteristics of the Zephyrine consensus protocol?"
+  Plan: 2 search angle(s)
+  Rounds run: 1
+  Sources found: 0; sources read: 0
+  Verified findings: 0 from 0 source(s)
+  Claims rejected in verification: 0
+  Stopped because: Stopped after 1 round(s) with no verified findings at all. Either the sources found did not address the question, or nothing they claimed could be verified against them. The last round also found no sources that had not already been seen.
+  Report validation: passed (0 revision(s))
+  Elapsed: 0.0s
+
+wrote /tmp/unans.md
+wrote /tmp/unans.pdf
+
+No report could be written from verified evidence. That is a result, not a crash: nothing found could be checked against its source.
