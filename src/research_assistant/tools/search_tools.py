@@ -41,7 +41,10 @@ _SCHEMA = {"query": str, "max_results": int}
 # ever an instruction in the system prompt: the repeat-detection code existed
 # but nothing on the live path called it. A model asked not to repeat itself
 # usually will not. Enforcing it here makes "usually" into "cannot", which is
-# the distinction the rest of this project keeps insisting on.
+# the distinction the rest of this project keeps insisting on. It works the
+# same way regardless of which provider is driving the search, since both
+# the Claude tool wrappers and Gemini's ``run_search_tool`` call through
+# ``_fetch_sources`` below.
 _QUERY_HISTORY: contextvars.ContextVar[Optional[Dict[str, Set]]] = contextvars.ContextVar(
     "search_query_history", default=None
 )
@@ -87,19 +90,30 @@ def _failed(message: str) -> Dict[str, Any]:
     return {"content": [{"type": "text", "text": f"SEARCH ERROR: {message}"}], "is_error": True}
 
 
-async def _run(
+async def _fetch_sources(
     search_fn: Callable[..., Awaitable[List[CandidateSource]]],
     args: Dict[str, Any],
     *,
-    source_name: str,
+    tool_name: str,
     default_max: int,
-) -> Dict[str, Any]:
+):
+    """Validate args, refuse a repeat, clamp max_results, and call a retrieval function.
+
+    Returns the sources on success, or a plain error string on failure --
+    deliberately not a raised exception, so a bad query, a repeat, or a down
+    endpoint is something the calling agent can read and react to (Chapter
+    2.3's observation loop) instead of something that ends its turn. Shared
+    by both ``_run`` below (the Claude MCP tool envelope) and
+    ``run_search_tool`` (used by the Search Agent's Gemini function-calling
+    loop), so a query clamps, repeats and fails identically no matter which
+    model asked for it.
+    """
     query = (args.get("query") or "").strip()
     if not query:
-        return _failed("No query was provided.")
-    if _already_run(source_name, query):
-        return _failed(
-            f"This search has already been run against {source_name} in this session, and "
+        return "No query was provided."
+    if _already_run(tool_name, query):
+        return (
+            f"This search has already been run against {tool_name} in this session, and "
             "would return the same results. Reformulate it -- different keywords, a "
             "different angle, or a different tool -- rather than repeating it."
         )
@@ -110,14 +124,26 @@ async def _run(
         max_results = default_max
 
     try:
-        sources = await search_fn(query, max_results=max_results)
+        return await search_fn(query, max_results=max_results)
     except MissingAPIKeyError as exc:
-        return _failed(str(exc))
+        return str(exc)
     except RetrievalError as exc:
-        return _failed(str(exc))
+        return str(exc)
     except Exception as exc:  # noqa: BLE001 - a tool must not kill the agent's turn
-        return _failed(f"Unexpected {type(exc).__name__}: {exc}")
-    return _ok(sources, source_name=source_name)
+        return f"Unexpected {type(exc).__name__}: {exc}"
+
+
+async def _run(
+    search_fn: Callable[..., Awaitable[List[CandidateSource]]],
+    args: Dict[str, Any],
+    *,
+    source_name: str,
+    default_max: int,
+) -> Dict[str, Any]:
+    result = await _fetch_sources(search_fn, args, tool_name=source_name, default_max=default_max)
+    if isinstance(result, str):
+        return _failed(result)
+    return _ok(result, source_name=source_name)
 
 
 @tool(
@@ -167,3 +193,66 @@ def create_search_tool_server():
         version="0.1.0",
         tools=SEARCH_TOOLS,
     )
+
+
+# Tool names, descriptions and retrieval functions in one place, so the
+# Claude tool wrappers above and any other caller describe the same three
+# tools the same way. Descriptions are reused verbatim as the Gemini
+# function-calling declarations in ``agents/search_agent.py``, so the two
+# providers are told about the same tools in the same words.
+TOOL_SPECS: Dict[str, Dict[str, Any]] = {
+    "search_arxiv": {
+        "fn": search_arxiv,
+        "default_max": 10,
+        "description": (
+            "Search arXiv for preprints. Best for recent computer science, physics, and "
+            "mathematics work that may not be formally published yet."
+        ),
+    },
+    "search_semantic_scholar": {
+        "fn": search_semantic_scholar,
+        "default_max": 10,
+        "description": (
+            "Search Semantic Scholar for published academic papers across all fields. "
+            "Returns citation counts, which help judge how established a finding is."
+        ),
+    },
+    "search_web": {
+        "fn": search_web,
+        "default_max": 8,
+        "description": (
+            "Search the general web. Best for current events, industry reports, government "
+            "or organisational sources, and anything not confined to academic literature."
+        ),
+    },
+}
+
+
+async def run_search_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one of the three retrieval tools by name, for callers outside the
+    Claude MCP envelope -- currently the Search Agent's Gemini function-calling
+    loop. Shares ``_fetch_sources`` with the Claude tool wrappers above, so a
+    query clamps and fails exactly the same way no matter which model asked.
+
+    Returns ``{"result_count": ..., "results": [...]}`` (plus a ``"note"`` if
+    nothing matched), or ``{"error": "..."}`` -- never raises, for the same
+    reason ``_fetch_sources`` does not.
+    """
+    spec = TOOL_SPECS.get(name)
+    if spec is None:
+        return {"error": f"Unknown tool {name!r}."}
+
+    result = await _fetch_sources(spec["fn"], args, tool_name=name, default_max=spec["default_max"])
+    if isinstance(result, str):
+        return {"error": result}
+
+    payload: Dict[str, Any] = {
+        "result_count": len(result),
+        "results": [source.model_dump() for source in result],
+    }
+    if not result:
+        payload["note"] = (
+            "No results matched this query. Consider rephrasing it, broadening it, "
+            "or trying a different tool -- do not simply repeat the same query."
+        )
+    return payload

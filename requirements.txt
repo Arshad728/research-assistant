@@ -1,0 +1,5 @@
+# Streamlit Community Cloud reads this file (not pyproject.toml -- this
+# project's pyproject.toml uses PEP 621 format, which Streamlit Cloud's
+# auto-detection parses as Poetry-style and would misread). This line
+# installs the project itself plus its "ui" extra (streamlit).
+.[ui]

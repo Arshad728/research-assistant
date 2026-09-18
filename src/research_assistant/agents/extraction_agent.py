@@ -58,6 +58,59 @@ async def complete_with_sdk(system_prompt: str, user_prompt: str, *, model: Opti
     return "\n".join(chunks)
 
 
+# The default model id is an alias, not a dated snapshot: Google documents it
+# as always pointing at the current Flash release, so this stays correct
+# without needing to be updated by hand as new Gemini versions ship.
+DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+
+
+async def complete_with_gemini(system_prompt: str, user_prompt: str, *, model: Optional[str] = None) -> str:
+    """One-shot model call for the 'gemini' provider, an alternative to Claude.
+
+    Same (system_prompt, user_prompt) -> reply contract as ``complete_with_sdk``,
+    so it can be used anywhere a ``CompletionFn`` is expected -- see
+    ``get_completion_fn`` below. The google-genai client's call is synchronous,
+    so it is run in a worker thread rather than blocking the event loop the
+    rest of the pipeline runs on.
+    """
+    import asyncio
+
+    from google import genai
+    from google.genai import types
+
+    from ..config import get_settings
+
+    api_key = get_settings().require(
+        "gemini_api_key", "GEMINI_API_KEY", "https://aistudio.google.com/apikey"
+    )
+
+    def _call() -> str:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model or DEFAULT_GEMINI_MODEL,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(system_instruction=system_prompt),
+        )
+        return response.text or ""
+
+    return await asyncio.to_thread(_call)
+
+
+def get_completion_fn(provider: str = "claude", model: Optional[str] = None) -> CompletionFn:
+    """Pick the model-calling function for a provider name.
+
+    The Planning, Extraction and Writer steps all accept a ``provider``
+    string and use this to build their default completion function, so the
+    choice is made the same way everywhere and a bad provider name fails
+    here -- with a clear message -- instead of deep inside a prompt.
+    """
+    if provider == "claude":
+        return lambda system, user: complete_with_sdk(system, user, model=model)
+    if provider == "gemini":
+        return lambda system, user: complete_with_gemini(system, user, model=model)
+    raise ValueError(f"Unknown provider {provider!r}. Choose 'claude' or 'gemini'.")
+
+
 class ExtractionAgent:
     """Turns candidate sources into verified findings, and says what it rejected."""
 
@@ -65,16 +118,16 @@ class ExtractionAgent:
         self,
         *,
         model: Optional[str] = None,
+        provider: str = "claude",
         complete: Optional[CompletionFn] = None,
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
         text_limit: int = DEFAULT_MODEL_TEXT_LIMIT,
     ) -> None:
         self.model = model
+        self.provider = provider
         self.min_similarity = min_similarity
         self.text_limit = text_limit
-        self._complete = complete or (
-            lambda system, user: complete_with_sdk(system, user, model=model)
-        )
+        self._complete = complete or get_completion_fn(provider, model)
 
     async def extract_from_document(
         self, document: SourceDocument, question: str

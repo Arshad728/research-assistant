@@ -24,6 +24,7 @@ class MissingAPIKeyError(RuntimeError):
 
 class Settings(BaseModel):
     anthropic_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
     serper_api_key: Optional[str] = None
     semantic_scholar_api_key: Optional[str] = None
@@ -55,12 +56,26 @@ class Settings(BaseModel):
             return "serper"
         return "none"
 
+    @property
+    def default_provider(self) -> str:
+        """Which provider the whole pipeline uses when none is chosen explicitly.
+
+        Search, planning, extraction and writing all follow this one choice.
+        Prefers Gemini whenever a key for it is configured -- Gemini has a
+        free tier and Claude does not, so that is the more useful default --
+        and falls back to Claude otherwise. This only decides the *default*;
+        --provider (CLI) and the model dropdown (UI) can still always
+        override it explicitly, in either direction.
+        """
+        return "gemini" if self.gemini_api_key else "claude"
+
 
 @lru_cache
 def get_settings() -> Settings:
     """Load settings once per process from the current environment."""
     return Settings(
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        gemini_api_key=os.environ.get("GEMINI_API_KEY"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         serper_api_key=os.environ.get("SERPER_API_KEY"),
         semantic_scholar_api_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),

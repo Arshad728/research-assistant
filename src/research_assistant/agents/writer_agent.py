@@ -60,17 +60,19 @@ class WriterAgent:
         self,
         *,
         model: Optional[str] = None,
+        provider: str = "claude",
         complete: Optional[CompletionFn] = None,
         max_revisions: int = 1,
     ) -> None:
         self.model = model
+        self.provider = provider
         self.max_revisions = max_revisions
         if complete is not None:
             self._complete = complete
         else:
-            from .extraction_agent import complete_with_sdk
+            from .extraction_agent import get_completion_fn
 
-            self._complete = lambda system, user: complete_with_sdk(system, user, model=model)
+            self._complete = get_completion_fn(provider, model)
 
     def _assemble(
         self,

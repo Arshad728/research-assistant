@@ -66,7 +66,8 @@ def cmd_check(args) -> int:
     heading("API KEYS")
     settings = get_settings()
     for name, value, note in [
-        ("ANTHROPIC_API_KEY", settings.anthropic_api_key, "required for every agent"),
+        ("ANTHROPIC_API_KEY", settings.anthropic_api_key, "needed for --provider claude (the default unless GEMINI_API_KEY is set)"),
+        ("GEMINI_API_KEY", settings.gemini_api_key, "needed for --provider gemini; has a free tier"),
         ("TAVILY_API_KEY", settings.tavily_api_key, "web search (or use Serper)"),
         ("SERPER_API_KEY", settings.serper_api_key, "web search (or use Tavily)"),
         ("SEMANTIC_SCHOLAR_API_KEY", settings.semantic_scholar_api_key, "recommended; keyless search is throttled"),
@@ -138,7 +139,9 @@ def print_run(run) -> None:
             print(wrap(issue.detail, indent="      "))
 
 
-async def _run_pipeline(question: str, *, demo: bool, max_rounds: int, out: str) -> int:
+async def _run_pipeline(
+    question: str, *, demo: bool, max_rounds: int, out: str, provider: str = "claude"
+) -> int:
     from .agents.writer_agent import save_report
     from .orchestration import ResearchPipeline, StoppingRule
 
@@ -148,7 +151,9 @@ async def _run_pipeline(question: str, *, demo: bool, max_rounds: int, out: str)
         pipeline = build_demo_pipeline(max_rounds=max_rounds)
         print("Demo mode: built-in sources, scripted models, no network.")
     else:
-        pipeline = ResearchPipeline(stopping_rule=StoppingRule(max_rounds=max_rounds))
+        pipeline = ResearchPipeline(
+            stopping_rule=StoppingRule(max_rounds=max_rounds), provider=provider
+        )
 
     run = await pipeline.run(question)
     print_run(run)
@@ -176,20 +181,37 @@ def cmd_run(args) -> int:
         return 1
 
     settings = get_settings()
-    if not settings.anthropic_api_key:
+    provider = args.provider or settings.default_provider
+
+    if provider == "claude" and not settings.anthropic_api_key:
         print(
-            "ERROR: no ANTHROPIC_API_KEY set. Try `research-assistant demo` to watch the "
-            "pipeline run without keys.",
+            "ERROR: --provider claude needs ANTHROPIC_API_KEY set. Try `research-assistant "
+            "demo` to watch the pipeline run without keys, or set GEMINI_API_KEY and use "
+            "--provider gemini instead.",
             file=sys.stderr,
         )
         return 1
+    if provider == "gemini" and not settings.gemini_api_key:
+        print(
+            "ERROR: --provider gemini needs GEMINI_API_KEY set. Get a free one at "
+            "https://aistudio.google.com/apikey and add it to your .env file.",
+            file=sys.stderr,
+        )
+        return 1
+    if args.provider is None:
+        print(f"(no --provider given; using {provider}, since that's what your keys allow)")
+    print(f"Search, planning, extraction and writing will all run on {provider}.")
     if settings.search_provider == "none":
         print(
             "warning: no web search provider configured; only academic sources will be searched.",
             file=sys.stderr,
         )
 
-    return asyncio.run(_run_pipeline(question, demo=False, max_rounds=args.max_rounds, out=args.out))
+    return asyncio.run(
+        _run_pipeline(
+            question, demo=False, max_rounds=args.max_rounds, out=args.out, provider=provider
+        )
+    )
 
 
 def cmd_demo(args) -> int:
@@ -458,6 +480,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("question", nargs="+")
     run.add_argument("--max-rounds", type=int, default=3)
     run.add_argument("--out", default="report", help="output path stem")
+    run.add_argument(
+        "--provider",
+        choices=["claude", "gemini"],
+        default=None,
+        help="model for the whole pipeline -- search, planning, extraction and writing. "
+        "Defaults to gemini when GEMINI_API_KEY is set, claude otherwise.",
+    )
     run.set_defaults(func=cmd_run)
 
     demo = subparsers.add_parser("demo", help="run the whole pipeline offline, with no keys")

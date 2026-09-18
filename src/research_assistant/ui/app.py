@@ -17,6 +17,7 @@ Run it with:
 from __future__ import annotations
 
 import asyncio
+import os
 
 import streamlit as st
 
@@ -24,8 +25,60 @@ from research_assistant.config import get_settings
 
 st.set_page_config(page_title="Multi-Agent Research Assistant", page_icon="*", layout="wide")
 
+_SECRET_ENV_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "TAVILY_API_KEY",
+    "SERPER_API_KEY",
+    "SEMANTIC_SCHOLAR_API_KEY",
+)
 
-def run_pipeline(question: str, demo: bool, max_rounds: int):
+
+def _load_secrets_into_env() -> None:
+    """Make Streamlit Community Cloud's secrets visible the same way a local ``.env`` is.
+
+    Deployed on Streamlit Community Cloud, API keys live in the dashboard's
+    "Secrets" box (``st.secrets``), not in a ``.env`` file -- ``.env`` is
+    gitignored and never leaves this machine. ``get_settings()`` reads
+    ``os.environ`` either way, exactly like the CLI does, so this copies any
+    of the keys above from ``st.secrets`` into the environment before
+    settings are read. Running locally with no ``secrets.toml``, ``st.secrets``
+    is empty and this does nothing -- the ``.env`` file keeps working as before.
+    """
+    for key in _SECRET_ENV_KEYS:
+        value = st.secrets.get(key)
+        if value and not os.environ.get(key):
+            os.environ[key] = value
+
+
+def _check_password() -> bool:
+    """Gate the page behind a password, but only when one is actually configured.
+
+    ``APP_PASSWORD`` is meant to be set once, in the Streamlit Community
+    Cloud secrets box, for a link that anyone on the internet could open --
+    it stops a stranger from burning through your API quota, nothing more.
+    Locally, with no ``secrets.toml``, nothing is configured and this
+    returns ``True`` immediately, so local use is unaffected.
+    """
+    configured = st.secrets.get("APP_PASSWORD")
+    if not configured:
+        return True
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("Multi-Agent Research Assistant")
+    st.caption("This deployment is password-protected.")
+    entered = st.text_input("Password", type="password", key="password_entry")
+    if st.button("Enter"):
+        if entered == configured:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
+
+def run_pipeline(question: str, demo: bool, max_rounds: int, provider: str = "claude"):
     """Run one research question and return the completed run."""
     if demo:
         from research_assistant.demo import build_demo_pipeline
@@ -34,7 +87,9 @@ def run_pipeline(question: str, demo: bool, max_rounds: int):
     else:
         from research_assistant.orchestration import ResearchPipeline, StoppingRule
 
-        pipeline = ResearchPipeline(stopping_rule=StoppingRule(max_rounds=max_rounds))
+        pipeline = ResearchPipeline(
+            stopping_rule=StoppingRule(max_rounds=max_rounds), provider=provider
+        )
     return asyncio.run(pipeline.run(question))
 
 
@@ -117,6 +172,10 @@ def render_run(run) -> None:
 
 
 def main() -> None:
+    _load_secrets_into_env()
+    if not _check_password():
+        return
+
     st.title("Multi-Agent Research Assistant")
     st.caption(
         "Four agents: one searches, one reads and verifies, one writes, one decides when "
@@ -125,18 +184,32 @@ def main() -> None:
 
     settings = get_settings()
     has_key = bool(settings.anthropic_api_key)
+    has_gemini_key = bool(settings.gemini_api_key)
+    has_any_key = has_key or has_gemini_key
 
     with st.sidebar:
         st.header("Settings")
         demo = st.checkbox(
             "Demo mode (offline)",
-            value=not has_key,
+            value=not has_any_key,
             help="Runs the real pipeline against three built-in documents. No API key, no "
             "network, no cost.",
         )
+        provider_options = ["claude", "gemini"]
+        provider = st.selectbox(
+            "Model (search, planning, extraction and writing all use this one)",
+            options=provider_options,
+            index=provider_options.index(settings.default_provider),
+            help="Defaults to gemini when GEMINI_API_KEY is set (it has a free tier), claude "
+            "otherwise -- pick either explicitly here.",
+        )
         max_rounds = st.slider("Maximum search rounds", 1, 5, 3)
-        if not has_key:
-            st.info("No ANTHROPIC_API_KEY found, so demo mode is on.")
+        if not has_any_key:
+            st.info("No ANTHROPIC_API_KEY or GEMINI_API_KEY found, so demo mode is on.")
+        if provider == "claude" and not has_key:
+            st.warning("No ANTHROPIC_API_KEY found. Add one to your .env file to use Claude.")
+        if provider == "gemini" and not has_gemini_key:
+            st.warning("No GEMINI_API_KEY found. Add one to your .env file to use Gemini.")
         st.caption(f"Web search provider: {settings.search_provider}")
 
     question = st.text_input(
@@ -149,12 +222,17 @@ def main() -> None:
         if not question.strip():
             st.error("Enter a research question first.")
             return
-        if not demo and not has_key:
-            st.error("Set ANTHROPIC_API_KEY in your .env file, or turn on demo mode.")
+        if not demo and provider == "claude" and not has_key:
+            st.error("Set ANTHROPIC_API_KEY in your .env file, switch the model to gemini, "
+                      "or turn on demo mode.")
+            return
+        if not demo and provider == "gemini" and not has_gemini_key:
+            st.error("Set GEMINI_API_KEY in your .env file, switch the model to claude, "
+                      "or turn on demo mode.")
             return
 
         with st.spinner("Searching, reading, verifying, writing..."):
-            run = run_pipeline(question.strip(), demo, max_rounds)
+            run = run_pipeline(question.strip(), demo, max_rounds, provider)
         st.session_state["run"] = run
 
     if "run" in st.session_state:

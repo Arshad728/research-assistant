@@ -118,20 +118,25 @@ class ResearchPipeline:
         stopping_rule: Optional[StoppingRule] = None,
         complete: Optional[CompletionFn] = None,
         model: Optional[str] = None,
+        provider: str = "claude",
         max_sources_per_round: int = 5,
     ) -> None:
-        self.search_agent = search_agent or SearchAgent()
-        self.extraction_agent = extraction_agent or ExtractionAgent(model=model)
-        self.writer_agent = writer_agent or WriterAgent(model=model)
+        # Planning (below), Search, Extraction and Writer all accept the same
+        # ``provider`` and default their own model calls from it, so one
+        # switch moves every model call in the pipeline together.
+        self.search_agent = search_agent or SearchAgent(provider=provider)
+        self.extraction_agent = extraction_agent or ExtractionAgent(model=model, provider=provider)
+        self.writer_agent = writer_agent or WriterAgent(model=model, provider=provider)
         self.stopping_rule = stopping_rule or StoppingRule()
+        self.provider = provider
         self.max_sources_per_round = max_sources_per_round
 
         if complete is not None:
             self._complete = complete
         else:
-            from ..agents.extraction_agent import complete_with_sdk
+            from ..agents.extraction_agent import get_completion_fn
 
-            self._complete = lambda system, user: complete_with_sdk(system, user, model=model)
+            self._complete = get_completion_fn(provider, model)
 
     async def plan(self, question: str) -> tuple[List[str], bool]:
         """Decide which searches to run. Returns the angles and whether they are a fallback."""
