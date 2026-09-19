@@ -66,8 +66,9 @@ def cmd_check(args) -> int:
     heading("API KEYS")
     settings = get_settings()
     for name, value, note in [
-        ("ANTHROPIC_API_KEY", settings.anthropic_api_key, "needed for --provider claude (the default unless GEMINI_API_KEY is set)"),
+        ("ANTHROPIC_API_KEY", settings.anthropic_api_key, "needed for --provider claude (the default unless GEMINI_API_KEY or GROQ_API_KEY is set)"),
         ("GEMINI_API_KEY", settings.gemini_api_key, "needed for --provider gemini; has a free tier"),
+        ("GROQ_API_KEY", settings.groq_api_key, "needed for --provider groq; free, more generous daily limit than Gemini"),
         ("TAVILY_API_KEY", settings.tavily_api_key, "web search (or use Serper)"),
         ("SERPER_API_KEY", settings.serper_api_key, "web search (or use Tavily)"),
         ("SEMANTIC_SCHOLAR_API_KEY", settings.semantic_scholar_api_key, "recommended; keyless search is throttled"),
@@ -186,8 +187,8 @@ def cmd_run(args) -> int:
     if provider == "claude" and not settings.anthropic_api_key:
         print(
             "ERROR: --provider claude needs ANTHROPIC_API_KEY set. Try `research-assistant "
-            "demo` to watch the pipeline run without keys, or set GEMINI_API_KEY and use "
-            "--provider gemini instead.",
+            "demo` to watch the pipeline run without keys, or set GEMINI_API_KEY / GROQ_API_KEY "
+            "and use --provider gemini / --provider groq instead.",
             file=sys.stderr,
         )
         return 1
@@ -195,6 +196,13 @@ def cmd_run(args) -> int:
         print(
             "ERROR: --provider gemini needs GEMINI_API_KEY set. Get a free one at "
             "https://aistudio.google.com/apikey and add it to your .env file.",
+            file=sys.stderr,
+        )
+        return 1
+    if provider == "groq" and not settings.groq_api_key:
+        print(
+            "ERROR: --provider groq needs GROQ_API_KEY set. Get a free one at "
+            "https://console.groq.com/keys and add it to your .env file.",
             file=sys.stderr,
         )
         return 1
@@ -482,10 +490,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out", default="report", help="output path stem")
     run.add_argument(
         "--provider",
-        choices=["claude", "gemini"],
+        choices=["claude", "gemini", "groq"],
         default=None,
         help="model for the whole pipeline -- search, planning, extraction and writing. "
-        "Defaults to gemini when GEMINI_API_KEY is set, claude otherwise.",
+        "Defaults to gemini when GEMINI_API_KEY is set, else groq when GROQ_API_KEY is set, "
+        "else claude.",
     )
     run.set_defaults(func=cmd_run)
 

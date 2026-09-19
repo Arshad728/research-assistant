@@ -96,6 +96,46 @@ async def complete_with_gemini(system_prompt: str, user_prompt: str, *, model: O
     return await asyncio.to_thread(_call)
 
 
+# openai/gpt-oss-120b is one of Groq's models confirmed to support tool use
+# (needed for the Search Agent's function-calling loop, not just this
+# one-shot completion), with free-tier limits far more generous per day than
+# Gemini's -- the point of adding Groq at all is as a roomier free fallback.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+async def complete_with_groq(system_prompt: str, user_prompt: str, *, model: Optional[str] = None) -> str:
+    """One-shot model call for the 'groq' provider, a second free alternative to Claude.
+
+    Same (system_prompt, user_prompt) -> reply contract as the other
+    completion functions -- see ``get_completion_fn`` below. Groq's client is
+    the same shape as OpenAI's (a chat-completions call with a messages
+    list) and, like the Gemini client, is synchronous, so it runs in a
+    worker thread rather than blocking the event loop.
+    """
+    import asyncio
+
+    from groq import Groq
+
+    from ..config import get_settings
+
+    api_key = get_settings().require(
+        "groq_api_key", "GROQ_API_KEY", "https://console.groq.com/keys"
+    )
+
+    def _call() -> str:
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model or DEFAULT_GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
+    return await asyncio.to_thread(_call)
+
+
 def get_completion_fn(provider: str = "claude", model: Optional[str] = None) -> CompletionFn:
     """Pick the model-calling function for a provider name.
 
@@ -108,7 +148,9 @@ def get_completion_fn(provider: str = "claude", model: Optional[str] = None) -> 
         return lambda system, user: complete_with_sdk(system, user, model=model)
     if provider == "gemini":
         return lambda system, user: complete_with_gemini(system, user, model=model)
-    raise ValueError(f"Unknown provider {provider!r}. Choose 'claude' or 'gemini'.")
+    if provider == "groq":
+        return lambda system, user: complete_with_groq(system, user, model=model)
+    raise ValueError(f"Unknown provider {provider!r}. Choose 'claude', 'gemini', or 'groq'.")
 
 
 class ExtractionAgent:

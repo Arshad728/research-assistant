@@ -39,6 +39,7 @@ def no_api_keys(monkeypatch):
     for name in (
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
+        "GROQ_API_KEY",
         "TAVILY_API_KEY",
         "SERPER_API_KEY",
         "SEMANTIC_SCHOLAR_API_KEY",

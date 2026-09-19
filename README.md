@@ -69,8 +69,9 @@ on day one.
 
 | Key | Where | Required? |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) | Set this, `GEMINI_API_KEY`, or both — whichever is active runs every agent. Pick with `--provider` / the web UI's model dropdown; with both set, Gemini is used by default. |
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) | Set this, `GEMINI_API_KEY`, `GROQ_API_KEY`, or any combination — whichever is active runs every agent. Pick with `--provider` / the web UI's model dropdown; with more than one set, Gemini is used by default, then Groq, then Claude. |
 | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — free tier, no card | See above. |
+| `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) — free tier, no card, more generous daily limit than Gemini's | See above. |
 | `TAVILY_API_KEY` | [tavily.com](https://tavily.com/) — free tier is 1,000 searches/month, no card | Yes, unless using Serper. |
 | `SERPER_API_KEY` | [serper.dev](https://serper.dev/) | Alternative to Tavily; set only one. |
 | `SEMANTIC_SCHOLAR_API_KEY` | [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api#api-key) | Technically optional, practically needed: the keyless pool throttles `/paper/search` heavily. |

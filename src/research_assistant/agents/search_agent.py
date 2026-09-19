@@ -139,6 +139,8 @@ class SearchAgent:
         try:
             if self.provider == "gemini":
                 return await self._find_sources_gemini(query)
+            if self.provider == "groq":
+                return await self._find_sources_groq(query)
             return await self._find_sources_claude(query)
         finally:
             reset_query_history(history_token)
@@ -246,6 +248,105 @@ class SearchAgent:
                     types.Part.from_function_response(name=call.name, response=result)
                 )
             contents.append(types.Content(role="user", parts=response_parts))
+
+        return self._finish(query, planner, retrieved, reply_text)
+
+    async def _find_sources_groq(self, query: str) -> SearchOutcome:
+        """Same job as ``_find_sources_claude``, driven by Groq's OpenAI-style tool calling.
+
+        Groq's client -- like OpenAI's, which it mirrors -- returns
+        ``tool_calls`` on the assistant message and expects a ``role: "tool"``
+        message back for each one, rather than running its own loop
+        internally the way the Claude SDK does. This drives that loop by
+        hand: one ``chat.completions.create`` call, then one round of
+        ``run_search_tool`` calls for whatever functions it asked for,
+        repeated until it replies with no further calls (or the round budget
+        runs out) -- the same shape as ``_find_sources_gemini``, adapted to
+        Groq's message format instead of Gemini's ``Content``/``Part`` one.
+        """
+        import asyncio
+
+        from groq import Groq
+
+        from ..config import get_settings
+        from .extraction_agent import DEFAULT_GROQ_MODEL
+
+        api_key = get_settings().require(
+            "groq_api_key", "GROQ_API_KEY", "https://console.groq.com/keys"
+        )
+        client = Groq(api_key=api_key)
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": spec["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The search query."},
+                            "max_results": {
+                                "type": "integer",
+                                "description": "Maximum results to return.",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+            for name, spec in TOOL_SPECS.items()
+        ]
+
+        messages: List[Any] = [
+            {"role": "system", "content": SEARCH_AGENT_SYSTEM_PROMPT},
+            {"role": "user", "content": self._prompt(query)},
+        ]
+
+        planner = SearchPlanner(original_query=query, max_rounds=self.max_rounds)
+        retrieved: List[CandidateSource] = []
+        reply_text: List[str] = []
+
+        for _round in range(self.max_rounds * 3):
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=self.model or DEFAULT_GROQ_MODEL,
+                messages=messages,
+                tools=tools,
+            )
+            message = response.choices[0].message
+            if message.content:
+                reply_text.append(message.content)
+
+            calls = message.tool_calls or []
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [call.model_dump() for call in calls] or None,
+                }
+            )
+            if not calls:
+                break
+
+            for call in calls:
+                try:
+                    args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                result = await run_search_tool(call.function.name, args)
+                for record in result.get("results") or []:
+                    try:
+                        retrieved.append(CandidateSource(**record))
+                    except Exception:  # noqa: BLE001 - a malformed record is skipped, not fatal
+                        continue
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(result),
+                    }
+                )
 
         return self._finish(query, planner, retrieved, reply_text)
 

@@ -25,6 +25,7 @@ class MissingAPIKeyError(RuntimeError):
 class Settings(BaseModel):
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
     serper_api_key: Optional[str] = None
     semantic_scholar_api_key: Optional[str] = None
@@ -62,12 +63,19 @@ class Settings(BaseModel):
 
         Search, planning, extraction and writing all follow this one choice.
         Prefers Gemini whenever a key for it is configured -- Gemini has a
-        free tier and Claude does not, so that is the more useful default --
-        and falls back to Claude otherwise. This only decides the *default*;
-        --provider (CLI) and the model dropdown (UI) can still always
-        override it explicitly, in either direction.
+        free tier and Claude does not, so that is the more useful default.
+        Falls back to Groq next (also free, and far more generous per-day
+        than Gemini's free tier, so it is a reasonable second choice rather
+        than an immediate drop to the paid option), and only falls back to
+        Claude when neither free key is configured. This only decides the
+        *default*; --provider (CLI) and the model dropdown (UI) can still
+        always override it explicitly, in any direction.
         """
-        return "gemini" if self.gemini_api_key else "claude"
+        if self.gemini_api_key:
+            return "gemini"
+        if self.groq_api_key:
+            return "groq"
+        return "claude"
 
 
 @lru_cache
@@ -76,6 +84,7 @@ def get_settings() -> Settings:
     return Settings(
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         gemini_api_key=os.environ.get("GEMINI_API_KEY"),
+        groq_api_key=os.environ.get("GROQ_API_KEY"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         serper_api_key=os.environ.get("SERPER_API_KEY"),
         semantic_scholar_api_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),

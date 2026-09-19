@@ -28,6 +28,7 @@ st.set_page_config(page_title="Multi-Agent Research Assistant", page_icon="*", l
 _SECRET_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
+    "GROQ_API_KEY",
     "TAVILY_API_KEY",
     "SERPER_API_KEY",
     "SEMANTIC_SCHOLAR_API_KEY",
@@ -213,7 +214,8 @@ def main() -> None:
     settings = get_settings()
     has_key = bool(settings.anthropic_api_key)
     has_gemini_key = bool(settings.gemini_api_key)
-    has_any_key = has_key or has_gemini_key
+    has_groq_key = bool(settings.groq_api_key)
+    has_any_key = has_key or has_gemini_key or has_groq_key
 
     with st.sidebar:
         st.header("Settings")
@@ -223,21 +225,27 @@ def main() -> None:
             help="Runs the real pipeline against three built-in documents. No API key, no "
             "network, no cost.",
         )
-        provider_options = ["claude", "gemini"]
+        provider_options = ["claude", "gemini", "groq"]
         provider = st.selectbox(
             "Model (search, planning, extraction and writing all use this one)",
             options=provider_options,
             index=provider_options.index(settings.default_provider),
-            help="Defaults to gemini when GEMINI_API_KEY is set (it has a free tier), claude "
-            "otherwise -- pick either explicitly here.",
+            help="Defaults to gemini when GEMINI_API_KEY is set (it has a free tier), groq "
+            "next (also free, more generous daily limit), claude otherwise -- pick any of "
+            "the three explicitly here.",
         )
         max_rounds = st.slider("Maximum search rounds", 1, 5, 3)
         if not has_any_key:
-            st.info("No ANTHROPIC_API_KEY or GEMINI_API_KEY found, so demo mode is on.")
+            st.info(
+                "No ANTHROPIC_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY found, so demo mode "
+                "is on."
+            )
         if provider == "claude" and not has_key:
             st.warning("No ANTHROPIC_API_KEY found. Add one to your .env file to use Claude.")
         if provider == "gemini" and not has_gemini_key:
             st.warning("No GEMINI_API_KEY found. Add one to your .env file to use Gemini.")
+        if provider == "groq" and not has_groq_key:
+            st.warning("No GROQ_API_KEY found. Add one to your .env file to use Groq.")
         st.caption(f"Web search provider: {settings.search_provider}")
 
     question = st.text_input(
@@ -251,12 +259,16 @@ def main() -> None:
             st.error("Enter a research question first.")
             return
         if not demo and provider == "claude" and not has_key:
-            st.error("Set ANTHROPIC_API_KEY in your .env file, switch the model to gemini, "
-                      "or turn on demo mode.")
+            st.error("Set ANTHROPIC_API_KEY in your .env file, switch the model to gemini or "
+                      "groq, or turn on demo mode.")
             return
         if not demo and provider == "gemini" and not has_gemini_key:
-            st.error("Set GEMINI_API_KEY in your .env file, switch the model to claude, "
-                      "or turn on demo mode.")
+            st.error("Set GEMINI_API_KEY in your .env file, switch the model to claude or "
+                      "groq, or turn on demo mode.")
+            return
+        if not demo and provider == "groq" and not has_groq_key:
+            st.error("Set GROQ_API_KEY in your .env file, switch the model to claude or "
+                      "gemini, or turn on demo mode.")
             return
 
         with st.spinner("Searching, reading, verifying, writing..."):
