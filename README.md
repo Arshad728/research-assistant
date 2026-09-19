@@ -33,6 +33,12 @@ Try `research-assistant demo --unanswerable` too. It asks about something that d
 and shows the system declining to answer rather than producing a confident report — which is the
 behaviour the whole design is for.
 
+A note on trying this live: `run` and the web UI's non-demo mode call real, rate-limited
+free-tier APIs (Gemini, Groq) -- under real traffic they can and do hit their limits. `demo` is
+not a fallback for that: it exercises the exact same orchestration, extraction and verification
+code, just against three built-in documents instead of the internet, so it is the reliable way
+to see the system work without depending on anyone's API quota.
+
 ## What it does
 
 ```
