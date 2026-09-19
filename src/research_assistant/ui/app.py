@@ -201,6 +201,15 @@ def main() -> None:
         "there is enough. Every claim in the report is checked against the source it cites."
     )
 
+    # get_settings() is @lru_cache'd -- deliberately, so the CLI (a fresh
+    # process per run) doesn't re-read the environment on every call. But
+    # Streamlit reruns this whole script many times in one long-lived
+    # process, and _load_secrets_into_env() only just updated os.environ
+    # above -- without clearing the cache first, a Settings computed on an
+    # earlier rerun (e.g. before secrets were saved) would stick around for
+    # the rest of the process's life. Clearing it here is cheap enough to do
+    # on every rerun.
+    get_settings.cache_clear()
     settings = get_settings()
     has_key = bool(settings.anthropic_api_key)
     has_gemini_key = bool(settings.gemini_api_key)
