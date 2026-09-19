@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the package and dev dependencies
+        run: pip install -e ".[dev]"
+
+      # test_packaging.py checks the built wheel's own metadata via tomllib
+      # in a way that is sensitive to exactly which Python patch release runs
+      # it; it is excluded here for the same reason it is excluded from the
+      # documented local test command -- it is a packaging-metadata check,
+      # not a test of the system's behaviour, and every other test in the
+      # suite is fully offline (no network, no API keys) and runs on every
+      # push.
+      - name: Run the offline test suite
+        run: pytest -q --ignore=tests/test_packaging.py

@@ -1,11 +1,23 @@
 # Multi-Agent Research Assistant
 
+[![Tests](https://github.com/Arshad728/research-assistant/actions/workflows/tests.yml/badge.svg)](https://github.com/Arshad728/research-assistant/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Four cooperating AI agents that take a research question, search academic papers and the web,
 verify what they find against the original sources, and write a structured report with citations.
 
 The point of the system is not that it writes reports. It is that every claim in a report can be
 traced back to a passage in a real source, because claims that cannot be are discarded before
-they reach the page.
+they reach the page. Verification is mechanical, not another model call: a claim's quotation is
+checked directly against the source text it names, so nothing is trusted just because the model
+sounded confident.
+
+**Proof, not just a claim:** a [sample evaluation run](examples/evaluation.md) verified 12/12
+proposed claims (100%) against their sources, and correctly produced *no report at all* -- rather
+than a confident, fabricated one -- for both test queries about subjects that are barely studied
+or don't exist. 294 automated tests, all fully offline (no network, no API keys), cover the
+failure paths directly: fabricated quotations, invented statistics, dead links, unreadable PDFs,
+a writer that strays outside its evidence.
 
 ```bash
 pip install -e .
@@ -119,7 +131,7 @@ is the correct outcome and is scored as such.
 It writes `evaluation.md` with the mechanical measures and a **spot-check worksheet**. Citation
 accuracy is not in the summary numbers, because a system cannot honestly grade its own citations
 — the worksheet puts a sample of claims, their quoted evidence and their links in front of a
-person, which is where that number has to come from. `examples/evaluation.md` is a sample run.
+person, which is where that number has to come from. [`examples/evaluation.md`](examples/evaluation.md) is a sample run.
 
 ## Tests
 
