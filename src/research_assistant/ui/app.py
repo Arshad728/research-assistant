@@ -34,6 +34,25 @@ _SECRET_ENV_KEYS = (
 )
 
 
+def _get_secret(key: str) -> str | None:
+    """Read one key from ``st.secrets`` without ever raising.
+
+    A plain dict's ``.get()`` returns ``None`` for a missing key. Streamlit's
+    does not: when *no* secrets have been configured at all -- true both
+    running locally with no ``secrets.toml`` and on a freshly deployed
+    Streamlit Community Cloud app before anything has been pasted into its
+    Secrets box -- ``st.secrets.get(...)`` raises ``StreamlitSecretNotFoundError``
+    instead of returning ``None``, which took the whole page down before it
+    could render anything. This normalises that to "no secret set", the same
+    outcome a real dict would give, so the app is never one crash away from
+    a config step nobody has done yet.
+    """
+    try:
+        return st.secrets.get(key)
+    except Exception:
+        return None
+
+
 def _load_secrets_into_env() -> None:
     """Make Streamlit Community Cloud's secrets visible the same way a local ``.env`` is.
 
@@ -46,7 +65,7 @@ def _load_secrets_into_env() -> None:
     is empty and this does nothing -- the ``.env`` file keeps working as before.
     """
     for key in _SECRET_ENV_KEYS:
-        value = st.secrets.get(key)
+        value = _get_secret(key)
         if value and not os.environ.get(key):
             os.environ[key] = value
 
@@ -60,7 +79,7 @@ def _check_password() -> bool:
     Locally, with no ``secrets.toml``, nothing is configured and this
     returns ``True`` immediately, so local use is unaffected.
     """
-    configured = st.secrets.get("APP_PASSWORD")
+    configured = _get_secret("APP_PASSWORD")
     if not configured:
         return True
     if st.session_state.get("authenticated"):
