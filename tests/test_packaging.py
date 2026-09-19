@@ -12,8 +12,15 @@ what the code actually imports.
 """
 import ast
 import sys
-import tomllib
 from pathlib import Path
+
+# tomllib is stdlib only from Python 3.11 on; this project's declared
+# floor is 3.10 (see pyproject.toml), so this test -- which reads
+# pyproject.toml itself -- needs to work there too.
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 import pytest
 
@@ -25,6 +32,10 @@ DISTRIBUTION_NAMES = {
     "dotenv": "python-dotenv",
     "fitz": "pymupdf",
     "claude_agent_sdk": "claude-agent-sdk",
+    # google-genai installs into the "google" namespace package, so
+    # "from google import genai" resolves to this distribution, not one
+    # actually named "google".
+    "google": "google-genai",
 }
 
 # Declared as optional extras rather than core requirements.
