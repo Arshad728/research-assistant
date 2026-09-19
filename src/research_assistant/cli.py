@@ -69,6 +69,7 @@ def cmd_check(args) -> int:
         ("ANTHROPIC_API_KEY", settings.anthropic_api_key, "needed for --provider claude (the default unless GEMINI_API_KEY or GROQ_API_KEY is set)"),
         ("GEMINI_API_KEY", settings.gemini_api_key, "needed for --provider gemini; has a free tier"),
         ("GROQ_API_KEY", settings.groq_api_key, "needed for --provider groq; free, more generous daily limit than Gemini"),
+        ("OLLAMA_HOST", settings.ollama_host, "optional; needed only for --provider ollama, and only if your server isn't at the default http://localhost:11434"),
         ("TAVILY_API_KEY", settings.tavily_api_key, "web search (or use Serper)"),
         ("SERPER_API_KEY", settings.serper_api_key, "web search (or use Tavily)"),
         ("SEMANTIC_SCHOLAR_API_KEY", settings.semantic_scholar_api_key, "recommended; keyless search is throttled"),
@@ -89,6 +90,18 @@ def cmd_check(args) -> int:
             print(f"  {label + ':':20} HTTP {exc.code} (network path works; request rejected)")
         except Exception as exc:  # noqa: BLE001 - diagnostics should never raise
             print(f"  {label + ':':20} UNREACHABLE ({exc})")
+
+    from .agents.extraction_agent import DEFAULT_OLLAMA_HOST
+
+    ollama_host = settings.ollama_host or DEFAULT_OLLAMA_HOST
+    try:
+        request = urllib.request.Request(ollama_host, headers={"User-Agent": "research-assistant/0.1"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            print(f"  {'Ollama:':20} reachable at {ollama_host} (HTTP {response.status})")
+    except Exception as exc:  # noqa: BLE001 - diagnostics should never raise
+        print(f"  {'Ollama:':20} not reachable at {ollama_host} ({exc})")
+    print("                       (only relevant for --provider ollama; run `ollama serve` "
+          "locally to use it)")
 
     print()
     if ok:
@@ -206,6 +219,11 @@ def cmd_run(args) -> int:
             file=sys.stderr,
         )
         return 1
+    # --provider ollama has no key to check here: it needs `ollama serve` running
+    # locally instead, which `research-assistant check` reports on but which this
+    # command cannot verify without a real network call that itself belongs to
+    # the actual run, not to argument validation. If the server isn't up, the
+    # run fails with an ordinary connection error when it tries to reach it.
     if args.provider is None:
         print(f"(no --provider given; using {provider}, since that's what your keys allow)")
     print(f"Search, planning, extraction and writing will all run on {provider}.")
@@ -490,11 +508,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out", default="report", help="output path stem")
     run.add_argument(
         "--provider",
-        choices=["claude", "gemini", "groq"],
+        choices=["claude", "gemini", "groq", "ollama"],
         default=None,
         help="model for the whole pipeline -- search, planning, extraction and writing. "
         "Defaults to gemini when GEMINI_API_KEY is set, else groq when GROQ_API_KEY is set, "
-        "else claude.",
+        "else claude. ollama is never chosen by default -- pass it explicitly, and have "
+        "`ollama serve` running locally first.",
     )
     run.set_defaults(func=cmd_run)
 

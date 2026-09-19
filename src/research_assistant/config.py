@@ -26,6 +26,7 @@ class Settings(BaseModel):
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
+    ollama_host: Optional[str] = None
     tavily_api_key: Optional[str] = None
     serper_api_key: Optional[str] = None
     semantic_scholar_api_key: Optional[str] = None
@@ -70,6 +71,13 @@ class Settings(BaseModel):
         Claude when neither free key is configured. This only decides the
         *default*; --provider (CLI) and the model dropdown (UI) can still
         always override it explicitly, in any direction.
+
+        Ollama is deliberately never chosen here, even when ``ollama_host``
+        is set: unlike an API key, a configured host is not the same as a
+        reachable server with the right model pulled, and this property is
+        a plain field lookup with no network I/O to confirm one actually
+        is. Ollama only runs when asked for explicitly (``--provider
+        ollama`` / the UI's model dropdown).
         """
         if self.gemini_api_key:
             return "gemini"
@@ -85,6 +93,7 @@ def get_settings() -> Settings:
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         gemini_api_key=os.environ.get("GEMINI_API_KEY"),
         groq_api_key=os.environ.get("GROQ_API_KEY"),
+        ollama_host=os.environ.get("OLLAMA_HOST"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         serper_api_key=os.environ.get("SERPER_API_KEY"),
         semantic_scholar_api_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),

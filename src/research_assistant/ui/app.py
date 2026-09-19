@@ -225,14 +225,15 @@ def main() -> None:
             help="Runs the real pipeline against three built-in documents. No API key, no "
             "network, no cost.",
         )
-        provider_options = ["claude", "gemini", "groq"]
+        provider_options = ["claude", "gemini", "groq", "ollama"]
         provider = st.selectbox(
             "Model (search, planning, extraction and writing all use this one)",
             options=provider_options,
             index=provider_options.index(settings.default_provider),
             help="Defaults to gemini when GEMINI_API_KEY is set (it has a free tier), groq "
             "next (also free, more generous daily limit), claude otherwise -- pick any of "
-            "the three explicitly here.",
+            "the four explicitly here. ollama needs no key but needs `ollama serve` running "
+            "on this same machine.",
         )
         max_rounds = st.slider("Maximum search rounds", 1, 5, 3)
         if not has_any_key:
@@ -246,6 +247,13 @@ def main() -> None:
             st.warning("No GEMINI_API_KEY found. Add one to your .env file to use Gemini.")
         if provider == "groq" and not has_groq_key:
             st.warning("No GROQ_API_KEY found. Add one to your .env file to use Groq.")
+        if provider == "ollama":
+            st.info(
+                "No key needed, but this only works when `ollama serve` is running on the "
+                "same machine as this app. That's true running locally -- it is NOT true for "
+                "an app deployed on Streamlit Community Cloud or similar, since 'localhost' "
+                "there is the hosting server, not your computer."
+            )
         st.caption(f"Web search provider: {settings.search_provider}")
 
     question = st.text_input(

@@ -149,6 +149,75 @@ async def complete_with_groq(system_prompt: str, user_prompt: str, *, model: Opt
     return await asyncio.to_thread(_call)
 
 
+# qwen3:8b is the model Ollama's own current tool-calling documentation uses
+# as its example, has full tool-calling support, and -- at the 7-8B tier --
+# is the size the community consistently describes as the practical sweet
+# spot for a 16GB machine: enough headroom to run comfortably, without the
+# memory pressure larger models risk. It is not bundled with Ollama; running
+# this provider means `ollama pull qwen3:8b` first.
+DEFAULT_OLLAMA_MODEL = "qwen3:8b"
+
+# Ollama's own default host when OLLAMA_HOST is not set.
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+
+# Ollama defaults every request's context window (num_ctx) to just 4,096
+# tokens, confirmed in Ollama's own FAQ -- far too small for the documents
+# this pipeline extracts from, and (per docs.ollama.com and multiple Ollama
+# GitHub issues, e.g. #1957: "native /api/chat transport to control num_ctx
+# (/v1 can't set it)") not reliably overridable through the OpenAI-compatible
+# /v1 endpoint at all. That is why this provider uses the native `ollama`
+# client rather than `openai` pointed at Ollama -- its `options` parameter
+# sets num_ctx directly and reliably. 16,384 tokens is chosen to comfortably
+# hold OLLAMA_MAX_TEXT_LIMIT's document text plus the system prompt and the
+# model's own reply, while staying within what an 8B model's KV cache costs
+# on a 16GB machine.
+OLLAMA_NUM_CTX = 16_384
+
+# Unlike Groq's GROQ_MAX_TEXT_LIMIT, this is not a hard rejection boundary
+# enforced by a remote server -- it exists because this provider runs on the
+# user's own machine, on ordinary laptop hardware, and a document sized for
+# Claude's or Gemini's context window (DEFAULT_MODEL_TEXT_LIMIT, 120,000
+# characters) would both overflow OLLAMA_NUM_CTX and make each extraction
+# call take minutes instead of seconds. ~40,000 characters is roughly
+# 10,000 tokens, leaving headroom under OLLAMA_NUM_CTX for the system prompt
+# and the model's reply.
+OLLAMA_MAX_TEXT_LIMIT = 40_000
+
+
+async def complete_with_ollama(system_prompt: str, user_prompt: str, *, model: Optional[str] = None) -> str:
+    """One-shot model call for the 'ollama' provider: a local, key-free alternative.
+
+    Same (system_prompt, user_prompt) -> reply contract as the other
+    completion functions -- see ``get_completion_fn`` below. Needs no API
+    key -- there is nothing to require from Settings -- but does need
+    ``ollama serve`` running locally with the model already pulled. Like the
+    other providers' clients, the native ``ollama`` client's call is
+    synchronous, so it runs in a worker thread rather than blocking the
+    event loop.
+    """
+    import asyncio
+
+    from ollama import Client
+
+    from ..config import get_settings
+
+    host = get_settings().ollama_host or DEFAULT_OLLAMA_HOST
+
+    def _call() -> str:
+        client = Client(host=host)
+        response = client.chat(
+            model=model or DEFAULT_OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            options={"num_ctx": OLLAMA_NUM_CTX},
+        )
+        return response.message.content or ""
+
+    return await asyncio.to_thread(_call)
+
+
 def get_completion_fn(provider: str = "claude", model: Optional[str] = None) -> CompletionFn:
     """Pick the model-calling function for a provider name.
 
@@ -163,7 +232,11 @@ def get_completion_fn(provider: str = "claude", model: Optional[str] = None) -> 
         return lambda system, user: complete_with_gemini(system, user, model=model)
     if provider == "groq":
         return lambda system, user: complete_with_groq(system, user, model=model)
-    raise ValueError(f"Unknown provider {provider!r}. Choose 'claude', 'gemini', or 'groq'.")
+    if provider == "ollama":
+        return lambda system, user: complete_with_ollama(system, user, model=model)
+    raise ValueError(
+        f"Unknown provider {provider!r}. Choose 'claude', 'gemini', 'groq', or 'ollama'."
+    )
 
 
 class ExtractionAgent:
@@ -181,13 +254,16 @@ class ExtractionAgent:
         self.model = model
         self.provider = provider
         self.min_similarity = min_similarity
-        # Explicit text_limit always wins. Left unset, Groq gets its own much
-        # lower cap -- see GROQ_MAX_TEXT_LIMIT above -- and every other
-        # provider keeps the original default.
+        # Explicit text_limit always wins. Left unset, Groq and Ollama get
+        # their own lower caps -- see GROQ_MAX_TEXT_LIMIT and
+        # OLLAMA_MAX_TEXT_LIMIT above -- and every other provider keeps the
+        # original default.
         if text_limit is not None:
             self.text_limit = text_limit
         elif provider == "groq":
             self.text_limit = GROQ_MAX_TEXT_LIMIT
+        elif provider == "ollama":
+            self.text_limit = OLLAMA_MAX_TEXT_LIMIT
         else:
             self.text_limit = DEFAULT_MODEL_TEXT_LIMIT
         self._complete = complete or get_completion_fn(provider, model)

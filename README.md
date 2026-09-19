@@ -5,6 +5,7 @@
 
 Four cooperating AI agents that take a research question, search academic papers and the web,
 verify what they find against the original sources, and write a structured report with citations.
+Runs on Claude, Gemini, Groq, or a local Ollama model -- pick whichever you have.
 
 The point of the system is not that it writes reports. It is that every claim in a report can be
 traced back to a passage in a real source, because claims that cannot be are discarded before
@@ -15,7 +16,7 @@ sounded confident.
 **Proof, not just a claim:** a [sample evaluation run](examples/evaluation.md) verified 12/12
 proposed claims (100%) against their sources, and correctly produced *no report at all* -- rather
 than a confident, fabricated one -- for both test queries about subjects that are barely studied
-or don't exist. 294 automated tests, all fully offline (no network, no API keys), cover the
+or don't exist. 287 automated tests, all fully offline (no network, no API keys), cover the
 failure paths directly: fabricated quotations, invented statistics, dead links, unreadable PDFs,
 a writer that strays outside its evidence.
 
@@ -37,7 +38,9 @@ A note on trying this live: `run` and the web UI's non-demo mode call real, rate
 free-tier APIs (Gemini, Groq) -- under real traffic they can and do hit their limits. `demo` is
 not a fallback for that: it exercises the exact same orchestration, extraction and verification
 code, just against three built-in documents instead of the internet, so it is the reliable way
-to see the system work without depending on anyone's API quota.
+to see the system work without depending on anyone's API quota. `--provider ollama` sidesteps
+rate limits a different way, by running a model on your own machine instead of a shared free
+tier -- see [Where to get each key](#where-to-get-each-key) below.
 
 ## What it does
 
@@ -67,7 +70,8 @@ appendix records how it was actually built, mistakes included.
 - API keys, for the commands that reach the internet or call a model: `run`, `read` (without
   `--no-model`), `write` (without `--demo`) and `evaluate` (without `--demo`). Installing the
   package, running `check`, `demo`, `search`, and the `--demo`/`--no-model` variants needs no
-  keys at all.
+  keys at all. Neither does `--provider ollama` on any of those commands -- it needs a local
+  Ollama server instead of a key.
 
 ## Setup
 
@@ -90,6 +94,7 @@ on day one.
 | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) | Set this, `GEMINI_API_KEY`, `GROQ_API_KEY`, or any combination — whichever is active runs every agent. Pick with `--provider` / the web UI's model dropdown; with more than one set, Gemini is used by default, then Groq, then Claude. |
 | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — free tier, no card | See above. |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) — free tier, no card, more generous daily limit than Gemini's | See above. |
+| *(none)* — `--provider ollama` | [ollama.com](https://ollama.com/) — install it, run `ollama serve`, then `ollama pull qwen3:8b` | No key at all, but never picked automatically — pass `--provider ollama` (or select it in the UI) explicitly. Runs the model on your own machine, so it isn't subject to anyone's free-tier rate limit, but it also only works when the machine running research-assistant is the one running `ollama serve` — that is true locally, not for the deployed Streamlit Cloud version of this app. Set `OLLAMA_HOST` only if your server isn't at the default `http://localhost:11434`. |
 | `TAVILY_API_KEY` | [tavily.com](https://tavily.com/) — free tier is 1,000 searches/month, no card | Yes, unless using Serper. |
 | `SERPER_API_KEY` | [serper.dev](https://serper.dev/) | Alternative to Tavily; set only one. |
 | `SEMANTIC_SCHOLAR_API_KEY` | [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api#api-key) | Technically optional, practically needed: the keyless pool throttles `/paper/search` heavily. |
