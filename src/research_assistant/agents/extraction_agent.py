@@ -102,6 +102,19 @@ async def complete_with_gemini(system_prompt: str, user_prompt: str, *, model: O
 # Gemini's -- the point of adding Groq at all is as a roomier free fallback.
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
+# Groq's free tier for this model caps input at 8,000 tokens PER MINUTE, not
+# per day like the request-count limits -- a single extraction call built
+# from DEFAULT_MODEL_TEXT_LIMIT (120,000 characters, sized for Claude's and
+# Gemini's much larger context windows) can need upwards of 19,000 tokens by
+# itself, which is already more than Groq will accept in one request,
+# confirmed live by a `413 Request too large ... tokens per minute (TPM):
+# Limit 8000, Requested 19245` error from the deployed app. This caps the
+# document text an extraction prompt sends to Groq well under that budget,
+# leaving room for the (small) system prompt, the model's own completion,
+# and more than one source being processed inside the same one-minute
+# window.
+GROQ_MAX_TEXT_LIMIT = 12_000
+
 
 async def complete_with_groq(system_prompt: str, user_prompt: str, *, model: Optional[str] = None) -> str:
     """One-shot model call for the 'groq' provider, a second free alternative to Claude.
@@ -163,12 +176,20 @@ class ExtractionAgent:
         provider: str = "claude",
         complete: Optional[CompletionFn] = None,
         min_similarity: float = DEFAULT_MIN_SIMILARITY,
-        text_limit: int = DEFAULT_MODEL_TEXT_LIMIT,
+        text_limit: Optional[int] = None,
     ) -> None:
         self.model = model
         self.provider = provider
         self.min_similarity = min_similarity
-        self.text_limit = text_limit
+        # Explicit text_limit always wins. Left unset, Groq gets its own much
+        # lower cap -- see GROQ_MAX_TEXT_LIMIT above -- and every other
+        # provider keeps the original default.
+        if text_limit is not None:
+            self.text_limit = text_limit
+        elif provider == "groq":
+            self.text_limit = GROQ_MAX_TEXT_LIMIT
+        else:
+            self.text_limit = DEFAULT_MODEL_TEXT_LIMIT
         self._complete = complete or get_completion_fn(provider, model)
 
     async def extract_from_document(
